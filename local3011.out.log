@@ -1,0 +1,42 @@
+Telemetry & Matchmaking service (Python + Apache Spark 4.2.0) on port 3011
+  producer: 40 simulated clients
+  server producer: Kafka -> telemetry.server.metrics @ localhost:9092
+  consumer: Spark local[4], 1s micro-batch window
+  cheat detection: lag() window function
+  server anomaly detection: lag() window function (Kafka stream)
+  matchmaking: groupBy + row_number() window
+  spark UI: http://127.0.0.1:4041
+  application id: local-1791762223566
+[pipeline] matchmaking failed:
+Traceback (most recent call last):
+  File "C:\Users\paula\Downloads\telemetry-app\app.py", line 239, in _pipeline_tick
+    ranked_regions = await _in_thread(consumer.rank_queue_spark)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\app.py", line 95, in _in_thread
+    return await asyncio.to_thread(fn, *args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\AppData\Local\Programs\Python\Python312\Lib\asyncio\threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\AppData\Local\Programs\Python\Python312\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\consumer.py", line 370, in rank_queue_spark
+    df = self.spark.createDataFrame(rows, schema=_QUEUE_SCHEMA)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\.venv\Lib\site-packages\pyspark\sql\session.py", line 1656, in createDataFrame
+    return self._create_dataframe(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\.venv\Lib\site-packages\pyspark\sql\session.py", line 1709, in _create_dataframe
+    jdf = self._jsparkSession.applySchemaToPythonRDD(jrdd.rdd(), struct.json())
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\.venv\Lib\site-packages\py4j\java_gateway.py", line 1362, in __call__
+    return_value = get_return_value(
+                   ^^^^^^^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\.venv\Lib\site-packages\pyspark\errors\exceptions\captured.py", line 251, in deco
+    return f(*a, **kw)
+           ^^^^^^^^^^^
+  File "C:\Users\paula\Downloads\telemetry-app\.venv\Lib\site-packages\py4j\protocol.py", line 335, in get_return_value
+    raise Py4JError(
+py4j.protocol.Py4JError: An error occurred while calling o40.applySchemaToPythonRDD
+

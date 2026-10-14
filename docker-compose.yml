@@ -1,0 +1,57 @@
+services:
+  telemetry-app:
+    build: .
+    image: telemetry-app:3.5.1
+    container_name: telemetry-app
+    restart: unless-stopped
+    user: spark
+    ports:
+      - "3003:3003"
+      - "4040:4040"
+    environment:
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_DRIVER_HOST: telemetry-app
+      SPARK_DRIVER_BIND: 0.0.0.0
+      KAFKA_BOOTSTRAP_SERVERS: act1234-kafka-1:9093
+      KAFKA_TOPIC: telemetry.server.metrics
+      REDIS_URL: redis://taller-redis:6379/0
+      REDIS_PREFIX: "telemetry:"
+    volumes:
+      - ./:/app
+    command: ["python3", "app.py"]
+    networks:
+      - taller_default
+      - act1234_default
+
+  # UI web de Redis (http://localhost:5540). Se une a la red de Redis para
+  # alcanzar `taller-redis:6379` y precarga la conexión por variables de entorno.
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: redis-insight
+    restart: unless-stopped
+    ports:
+      - "5540:5540"
+    environment:
+      RI_REDIS_HOST: taller-redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_ALIAS: "Telemetry Redis"
+      RI_ACCEPT_TERMS_AND_CONDITIONS: "true"
+    volumes:
+      - redis-insight-data:/data
+    networks:
+      - taller_default
+
+# La app se conecta a la red del clúster Spark (taller-123_default, donde vive
+# spark-master) y a la red de Kafka (act1234_default, donde vive act1234-kafka-1
+# con su listener INTERNAL en el puerto 9093). Ambas deben existir.
+# redis-insight comparte la red de Spark/Redis para ver `taller-redis`.
+networks:
+  taller_default:
+    name: taller-123_default
+    external: true
+  act1234_default:
+    name: act1234_default
+    external: true
+
+volumes:
+  redis-insight-data:

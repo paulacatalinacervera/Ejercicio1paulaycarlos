@@ -1,0 +1,7 @@
+fastapi==0.128.0
+uvicorn==0.44.0
+python-socketio==5.17.0
+jinja2==3.1.6
+kafka-python==2.2.15
+redis==5.0.8
+pyspark==4.2.0

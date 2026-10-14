@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paula Match</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css?XTransformPort=3003" />
+</head>
+<body>
+  <!-- TOP BAR -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="toprow">
+        <div class="brand">
+        
+          <div>
+            <h1>Ejercicio 1</h1>
+            <div class="sub">Telemetría y emparejamiento en vivo</div>
+          </div>
+        </div>
+        <div class="status">
+          <span id="spark-badge" class="badge">
+            <span class="dot"></span>
+            <span id="spark-version">Spark</span>
+            <span id="spark-batches" class="dim">0 batches</span>
+          </span>
+          <span id="kafka-badge" class="badge">
+            <span class="dot"></span>
+            <span id="kafka-label">Kafka</span>
+            <span id="kafka-topic" class="dim">…</span>
+            <span id="kafka-conn" class="crit-t">offline</span>
+          </span>
+          <span id="conn-badge" class="badge crit">
+            <span id="conn-dot" class="dot"></span>
+            <span id="conn-text">Desconectado</span>
+          </span>
+        </div>
+      </div>
+      <div class="toolrow">
+        <div class="control">
+          <span class="control-label">Producer</span>
+          <label class="switch">
+            <input type="checkbox" id="producer-toggle" checked>
+            <span class="track"><span class="thumb"></span></span>
+          </label>
+          <span id="producer-status" class="mono ok-t">LIVE</span>
+        </div>
+        <div class="control">
+          <span class="control-label">Clientes</span>
+          <input id="client-slider" type="range" min="6" max="120" step="2" value="40" class="range">
+          <span id="client-value" class="mono">40</span>
+        </div>
+        <div class="spacer"></div>
+        <button id="btn-inject" class="btn btn-danger">Inyectar tramposo</button>
+        <button id="btn-sync-redis" class="btn btn-ghost" type="button">Sincronizar Redis</button>
+        <button id="btn-clear" class="btn btn-ghost">Limpiar alertas</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div id="stats-bar" class="stats"></div>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2 class="panel-title">Arquitectura del pipeline</h2>
+        <span class="panel-sub">clientes y servidores → Kafka → Spark → socket.io → dashboard</span>
+      </div>
+      <div class="panel-body">
+        <div id="pipeline-stages" class="pipeline"></div>
+      </div>
+    </section>
+
+    <!-- minimap + feed -->
+    <div class="grid grid-3">
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Telemetría de jugadores</h2>
+          <div id="map-badges" class="status"></div>
+        </div>
+        <div class="panel-body">
+          <div class="minimap-wrap">
+            <svg id="minimap" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet"></svg>
+            <div class="legend">
+              <div class="legend-row"><span class="sw" style="background:var(--accent)"></span>En partida</div>
+              <div class="legend-row"><span class="sw" style="background:var(--mute)"></span>En cola</div>
+              <div class="legend-row"><span class="sw" style="background:var(--crit)"></span>Marcado</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Flujo de eventos</h2>
+          <div class="status">
+            <span id="eps-badge" class="tag">0/s</span>
+            <button id="btn-add-event" class="btn btn-ghost btn-sm" type="button">Añadir evento</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div id="feed-list" class="scroll h-feed">
+            <p class="empty">Esperando eventos…</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- matchmaking + cheat detection -->
+    <div class="grid grid-2">
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Matchmaking</h2>
+          <span class="panel-sub">3v3 por región, MMR y ping</span>
+        </div>
+        <div class="panel-body">
+          <div class="counter-row">
+            <span class="counter">Cola <b id="queue-count">0</b></span>
+            <span class="counter">Partidas <b id="match-count">0</b></span>
+          </div>
+          <div class="scroll h-feed2">
+            <div class="two-col">
+              <div id="queue-list" class="list"></div>
+              <div id="match-list" class="list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Detección de trampas <span id="alert-badge" class="tag crit hidden">0</span></h2>
+          <button id="btn-clear-2" class="btn btn-ghost btn-sm">Limpiar</button>
+        </div>
+        <div class="panel-body">
+          <p class="hint">Movimiento imposible: velocidad &gt; 260 u/s o salto &gt; 400 u.</p>
+          <div id="alert-list" class="scroll h-feed2"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- server telemetry + anomalies -->
+    <div class="grid grid-3">
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Métricas de servidores de juego</h2>
+          <div class="status">
+            <span class="control-label">Server producer</span>
+            <label class="switch">
+              <input type="checkbox" id="server-producer-toggle" checked>
+              <span class="track"><span class="thumb"></span></span>
+            </label>
+            <span id="server-producer-status" class="mono ok-t">LIVE</span>
+            <button id="btn-srv-clear" class="btn btn-ghost btn-sm">Limpiar</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <p id="server-summary" class="hint"></p>
+          <div id="server-list" class="scroll h-srv">
+            <p class="empty">Los servidores aparecen cuando se forman partidas.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Anomalías de servidor <span id="srv-alert-badge" class="tag warn hidden">0</span></h2>
+        </div>
+        <div class="panel-body">
+          <div id="server-alert-list" class="scroll h-anom">
+            <p class="empty">Sin picos de CPU ni pérdida de paquetes.</p>
+          </div>
+          <div class="chart-block">
+            <p class="hint">CPU media de servidores</p>
+            <div class="chart h-sm"><canvas id="cpu-chart"></canvas></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- charts -->
+    <div class="grid grid-2">
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Eventos por segundo</h2>
+          <span class="panel-sub">últimos 60 s</span>
+        </div>
+        <div class="panel-body">
+          <div class="chart h-md"><canvas id="throughput-chart"></canvas></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">Distribución de ping</h2>
+          <span class="panel-sub">jugadores por rango</span>
+        </div>
+        <div class="panel-body">
+          <div class="chart h-md"><canvas id="ping-chart"></canvas></div>
+        </div>
+      </section>
+    </div>
+
+    <div id="connecting-banner" class="banner">Conectando al stream de telemetría…</div>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-inner">
+      <span>Matchmaker Ops · pipeline de telemetría en tiempo real</span>
+      <span class="mono">micro-batch 1 s · detección de trampas · matchmaking</span>
+    </div>
+  </footer>
+
+  <script>
+    // ============================================================
+    // Dashboard logic — vanilla JavaScript
+    // ============================================================
+    const PORT = 3003;
+    const socket = io({ query: { XTransformPort: PORT }, transports: ['websocket', 'polling'], reconnection: true });
+
+    // --- palette mirrors the CSS (used inside SVG / canvas) ---
+    const C = {
+      accent: '#5b8def',
+      ok: '#3ecf8e',
+      warn: '#e0a83a',
+      crit: '#f16c6c',
+      mute: '#6b7480',
+      grid: '#232a34',
+      axis: '#98a0ad',
+    };
+
+    // --- in-memory state ---
+    let players = new Map();
+    let matches = [];
+    let alerts = [];
+    let servers = [];
+    let serverAlerts = [];
+    let stats = null;
+    let producerRunning = true;
+    let serverProducerRunning = true;
+    let clientCount = 40;
+    const feedMax = 60;
+
+    // --- icons (monochrome, currentColor) ---
+    const svg = (paths, size = 16) =>
+      `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+
+    const ICONS = {
+      zap: svg('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>'),
+      users: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>'),
+      clock: svg('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+      swords: svg('<path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6"/><path d="m16 16 4 4"/><path d="m19 21 2-2"/>'),
+      trophy: svg('<path d="M8 21h8"/><path d="M12 17v4"/><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M17 5h3v2a3 3 0 0 1-3 3"/><path d="M7 5H4v2a3 3 0 0 0 3 3"/>'),
+      server: svg('<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><path d="M6 6.5h.01"/><path d="M6 17.5h.01"/>'),
+      shield: svg('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 15h.01"/>'),
+      gauge: svg('<path d="M12 14l4-4"/><path d="M3.5 18a10 10 0 1 1 17 0"/>'),
+      activity: svg('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),
+      cpu: svg('<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>'),
+      eps: svg('<path d="M4 17V9M9 17V5M14 17v-6M19 17v-9"/>'),
+    };
+
+    // ============================================================
+    // Render functions
+    // ============================================================
+    function statCard(icon, label, value, tone, sub) {
+      return `<div class="stat-card">
+        <div>
+          <div class="stat-label">${label}</div>
+          <div class="stat-value">${value}</div>
+          ${sub ? `<div class="stat-sub">${sub}</div>` : ''}
+        </div>
+        <div class="stat-icon ${tone || ''}">${icon}</div>
+      </div>`;
+    }
+
+    function renderStats() {
+      const eps = stats?.events_per_second ?? 0;
+      const total = stats?.total_events ?? 0;
+      const active = stats?.active_players ?? 0;
+      const inQueue = stats?.in_queue ?? 0;
+      const inMatch = stats?.in_match ?? 0;
+      const cheaters = stats?.cheaters_flagged ?? 0;
+      const matchesFormed = stats?.matches_formed ?? 0;
+      const avgPing = stats?.avg_ping ?? 0;
+      const serverCount = stats?.server_count ?? 0;
+      const bar = document.getElementById('stats-bar');
+      const lastCard = cheaters > 0
+        ? statCard(ICONS.shield, 'Tramposos', cheaters, 'crit', 'movimiento imposible')
+        : statCard(ICONS.gauge, 'Ping medio', avgPing + ' ms', 'accent', 'todos los clientes');
+      bar.innerHTML =
+        statCard(ICONS.zap, 'Eventos/s', eps.toLocaleString(), 'warn', total.toLocaleString() + ' total') +
+        statCard(ICONS.users, 'Jugadores', active, 'accent', 'clientes simulados') +
+        statCard(ICONS.clock, 'En cola', inQueue, '', 'esperando partida') +
+        statCard(ICONS.swords, 'En partida', inMatch, 'ok', 'partidas vivas') +
+        statCard(ICONS.trophy, 'Partidas', matchesFormed, '', 'formadas') +
+        statCard(ICONS.server, 'Servidores', serverCount, 'warn', 'vía Kafka') +
+        lastCard;
+    }
+
+    function renderPipeline() {
+      const stages = [
+        { icon: ICONS.activity, title: 'Clientes', sub: 'telemetría de jugadores', desc: 'Posición, ping, acciones y bajas.' },
+        { icon: ICONS.server, title: 'Servidores', sub: 'productor Kafka', desc: 'CPU, RAM, tick y pérdida de paquetes al tópico.' },
+        { icon: ICONS.eps, title: 'Kafka', sub: 'telemetry.server.metrics', desc: 'El hilo de ingest reintroduce los mensajes.' },
+        { icon: ICONS.cpu, title: 'Spark', sub: 'consumidor PySpark', desc: 'Micro-batch de 1 s: lag(), groupBy, row_number().', tone: 'accent' },
+        { icon: ICONS.gauge, title: 'Dashboard', sub: 'socket.io', desc: 'Telemetría, minimapa, cola y alertas en vivo.', tone: 'ok' },
+      ];
+      const arrow = '<div class="arrow">' + svg('<path d="M5 12h14"/><path d="m12 5 7 7-7 7"/>', 15) + '</div>';
+      document.getElementById('pipeline-stages').innerHTML = stages.map((s, i) => `
+        <div class="stage">
+          <span class="stage-icon ${s.tone || ''}">${s.icon}</span>
+          <div class="min-w-0">
+            <div class="stage-title">${s.title}</div>
+            <div class="stage-sub">${s.sub}</div>
+            <div class="stage-desc">${s.desc}</div>
+          </div>
+        </div>
+        ${i < stages.length - 1 ? arrow : ''}
+      `).join('');
+    }
+
+    function renderMinimap() {
+      const svgEl = document.getElementById('minimap');
+      const ps = Array.from(players.values());
+      const inMatch = ps.filter(p => p.status === 'in_match').length;
+      const inQueue = ps.filter(p => p.status === 'in_queue').length;
+      const cheaters = ps.filter(p => p.is_cheater).length;
+      document.getElementById('map-badges').innerHTML =
+        `<span class="badge ok" style="padding:3px 9px">${inMatch} en partida</span>` +
+        `<span class="badge" style="padding:3px 9px"><span class="dot" style="background:var(--mute)"></span>${inQueue} en cola</span>` +
+        (cheaters > 0 ? `<span class="badge crit" style="padding:3px 9px">${cheaters} marcados</span>` : '');
+
+      let dots = '';
+      for (const p of ps) {
+        const queued = p.status === 'in_queue';
+        const color = p.is_cheater ? C.crit : queued ? C.mute : C.accent;
+        const r = p.is_cheater ? 9 : queued ? 4 : 6;
+        dots += `<g>`;
+        if (p.is_cheater || !queued) {
+          dots += `<circle cx="${p.x}" cy="${p.y}" r="${r + 4}" fill="${color}" opacity="${p.is_cheater ? 0.22 : 0.12}"><animate attributeName="r" values="${r+4};${r+10};${r+4}" dur="1.2s" repeatCount="indefinite"/></circle>`;
+        }
+        dots += `<circle cx="${p.x}" cy="${p.y}" r="${r}" fill="${queued ? 'none' : color}" stroke="${color}" stroke-width="${queued ? 1.5 : 0}" opacity="${queued ? 0.7 : 1}"/>`;
+        dots += `</g>`;
+      }
+      svgEl.innerHTML = `
+        <defs>
+          <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
+            <path d="M 100 0 L 0 0 0 100" fill="none" stroke="${C.grid}" stroke-width="1"/>
+          </pattern>
+        </defs>
+        <rect width="1000" height="1000" fill="url(#grid)"/>
+        ${[250,500,750].map(r => `<circle cx="500" cy="500" r="${r}" fill="none" stroke="#2a3242" stroke-width="1" stroke-dasharray="4 6" opacity="0.8"/>`).join('')}
+        ${dots}
+      `;
+    }
+
+    function timeAgo(ts) {
+      const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+      if (s < 1) return 'ahora';
+      if (s < 60) return s + 's';
+      return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    }
+
+    const ACTION_META = {
+      shoot: 'SHOOT', jump: 'JUMP', reload: 'RELOAD',
+      ability: 'ABILITY', loot: 'LOOT', revive: 'REVIVE',
+    };
+
+    function feedRowHTML(ev) {
+      if (ev.type === 'kill') {
+        return `<div class="feed-item kill fade-in">
+          <span class="tag crit">KILL</span>
+          <span class="feed-text"><b>${ev.player_name}</b> eliminó a <b>${ev.victim_name || '?'}</b></span>
+          <span class="feed-time">${timeAgo(ev.timestamp)}</span>
+        </div>`;
+      }
+      if (ev.type === 'action') {
+        const label = ACTION_META[ev.action] || String(ev.action || '').toUpperCase();
+        return `<div class="feed-item fade-in">
+          <span class="tag">${label}</span>
+          <span class="feed-text"><b>${ev.player_name}</b></span>
+          <span class="feed-time">${ev.ping}ms</span>
+        </div>`;
+      }
+      return '';
+    }
+
+    function renderFeed(events) {
+      const list = document.getElementById('feed-list');
+      if (events.length) {
+        const cur = list.querySelectorAll('[data-ev]');
+        const curIds = new Set(Array.from(cur).map(e => e.dataset.ev));
+        const newOnes = events.filter(e => !curIds.has(e.id));
+        if (newOnes.length) {
+          const frag = document.createDocumentFragment();
+          for (const ev of newOnes) {
+            const div = document.createElement('div');
+            div.dataset.ev = ev.id;
+            div.innerHTML = feedRowHTML(ev);
+            const node = div.firstElementChild;
+            if (node) frag.appendChild(node);
+          }
+          list.prepend(frag);
+        }
+      }
+      const placeholder = list.querySelector('p');
+      if (placeholder && list.querySelector('[data-ev]')) placeholder.remove();
+      const items = list.querySelectorAll('[data-ev]');
+      if (items.length > feedMax) {
+        for (let i = feedMax; i < items.length; i++) items[i].remove();
+      }
+      if (!list.querySelector('[data-ev]')) {
+        list.innerHTML = '<p class="empty">Esperando eventos…</p>';
+      }
+    }
+
+    function skillTier(skill) {
+      if (skill >= 80) return { label: 'Elite', cls: 'tier tier-elite' };
+      if (skill >= 60) return { label: 'Diamond', cls: 'tier tier-diamond' };
+      if (skill >= 40) return { label: 'Gold', cls: 'tier tier-gold' };
+      if (skill >= 20) return { label: 'Silver', cls: 'tier tier-silver' };
+      return { label: 'Bronze', cls: 'tier tier-bronze' };
+    }
+    function pingColor(ping) {
+      if (ping <= 50) return 'ping-ok';
+      if (ping <= 100) return 'ping-warn';
+      return 'ping-crit';
+    }
+
+    function renderMatchmaking() {
+      const ps = Array.from(players.values());
+      const queued = ps.filter(p => p.status === 'in_queue').sort((a,b) => a.queue_enter_at - b.queue_enter_at);
+      document.getElementById('queue-count').textContent = queued.length;
+      document.getElementById('match-count').textContent = matches.length;
+
+      const qList = document.getElementById('queue-list');
+      qList.innerHTML = queued.length === 0
+        ? '<p class="empty">Cola vacía</p>'
+        : queued.slice(0, 24).map(p => {
+            const t = skillTier(p.skill);
+            const waited = Math.round((Date.now() - p.queue_enter_at) / 1000);
+            return `<div class="q-item">
+              <div style="min-width:0;flex:1">
+                <p class="q-name">${p.name}</p>
+                <div class="q-meta"><span>${p.region}</span><span class="${pingColor(p.ping)}">${p.ping}ms</span><span>${waited}s</span></div>
+              </div>
+              <span class="${t.cls}">${t.label} · ${p.skill}</span>
+            </div>`;
+          }).join('');
+
+      const mList = document.getElementById('match-list');
+      mList.innerHTML = matches.length === 0
+        ? '<p class="empty">Sin partidas activas</p>'
+        : matches.slice(0, 12).map(m => {
+            const age = Math.round((Date.now() - m.created_at) / 1000);
+            const a = m.team_a.map(id => players.get(id)?.name || '—').slice(0,3);
+            const b = m.team_b.map(id => players.get(id)?.name || '—').slice(0,3);
+            return `<div class="match-card">
+              <div class="match-head">
+                <span class="mono">${m.id}</span>
+                <span class="tag">${m.region} · ${age}s</span>
+              </div>
+              <div class="match-teams">
+                <div class="team a">${a.map(n => `<p>${n}</p>`).join('')}</div>
+                <div class="vs">VS</div>
+                <div class="team b">${b.map(n => `<p>${n}</p>`).join('')}</div>
+              </div>
+              <div class="match-foot"><span>MMR ${m.avg_skill}</span><span class="${pingColor(m.avg_ping)}">avg ${m.avg_ping}ms</span></div>
+            </div>`;
+          }).join('');
+    }
+
+    function renderAlerts() {
+      const list = document.getElementById('alert-list');
+      const badge = document.getElementById('alert-badge');
+      if (alerts.length > 0) {
+        badge.classList.remove('hidden');
+        badge.textContent = alerts.length;
+      } else {
+        badge.classList.add('hidden');
+      }
+      if (alerts.length === 0) {
+        list.innerHTML = '<p class="empty">Sin tramposos detectados. Usa «Inyectar tramposo» para generar uno.</p>';
+        return;
+      }
+      list.innerHTML = alerts.slice(0, 50).map(a => {
+        const isTeleport = a.reason.toLowerCase().includes('teleport');
+        return `<div class="alert-card crit fade-in">
+          <div class="alert-head">
+            <span class="tag crit">${isTeleport ? 'TELEPORT' : 'SPEED'}</span>
+            <span class="alert-name">${a.player_name}</span>
+            <span class="feed-time">${timeAgo(a.timestamp)}</span>
+          </div>
+          <p class="alert-detail">${a.details}</p>
+          <div class="alert-meta"><span class="mono">${a.speed} u/s</span><span class="mono">${a.distance}u</span></div>
+        </div>`;
+      }).join('');
+    }
+
+    // ============================================================
+    // Game server telemetry (Kafka-backed stream)
+    // ============================================================
+    function cpuTone(cpu) {
+      if (cpu >= 90) return 'crit';
+      if (cpu >= 75) return 'warn';
+      return 'ok';
+    }
+
+    function renderServers() {
+      const list = document.getElementById('server-list');
+      const summary = document.getElementById('server-summary');
+      if (!servers.length) {
+        summary.textContent = '';
+        list.innerHTML = '<p class="empty">Los servidores aparecen cuando se forman partidas.</p>';
+        return;
+      }
+      const degraded = servers.filter(s => s.degraded).length;
+      summary.innerHTML =
+        `<span>${servers.length} activo${servers.length !== 1 ? 's' : ''}</span>` +
+        ` · <span class="${degraded ? 'warn-t' : ''}">${degraded} degradado${degraded !== 1 ? 's' : ''}</span>` +
+        ` · uno por partida, métricas vía Kafka`;
+      list.innerHTML = servers.slice(0, 24).map(s => {
+        const c = cpuTone(s.cpu);
+        return `<div class="srv-card ${s.degraded ? 'degraded' : ''}">
+          <div class="srv-head">
+            <span class="srv-name mono">${s.name}</span>
+            ${s.degraded ? '<span class="tag warn">DEGRADED</span>' : ''}
+            <span class="srv-meta">${s.region} · ${s.match_id} · ${s.active_players} jugadores</span>
+          </div>
+          <div class="bars">
+            <div class="bar-row"><span class="bar-label">CPU</span><div class="bar"><div class="bar-fill ${c}" style="width:${Math.min(100, s.cpu)}%"></div></div><span class="bar-val">${s.cpu}%</span></div>
+            <div class="bar-row"><span class="bar-label">Loss</span><div class="bar"><div class="bar-fill crit" style="width:${Math.min(100, s.packet_loss / 8 * 100)}%"></div></div><span class="bar-val">${s.packet_loss}%</span></div>
+            <div class="bar-row"><span class="bar-label">Tick</span><div class="bar"><div class="bar-fill accent" style="width:${Math.min(100, s.tick_rate / 64 * 100)}%"></div></div><span class="bar-val">${s.tick_rate}</span></div>
+            <div class="bar-row"><span class="bar-label">RAM</span><div class="bar"><div class="bar-fill" style="width:${Math.min(100, s.memory)}%"></div></div><span class="bar-val">${s.memory}%</span></div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function renderServerAlerts() {
+      const list = document.getElementById('server-alert-list');
+      const badge = document.getElementById('srv-alert-badge');
+      if (serverAlerts.length > 0) {
+        badge.classList.remove('hidden');
+        badge.textContent = serverAlerts.length;
+      } else {
+        badge.classList.add('hidden');
+      }
+      if (serverAlerts.length === 0) {
+        list.innerHTML = '<p class="empty">Sin picos de CPU ni pérdida de paquetes.</p>';
+        return;
+      }
+      list.innerHTML = serverAlerts.slice(0, 30).map(a => {
+        const loss = a.reason === 'Packet loss';
+        return `<div class="alert-card warn fade-in">
+          <div class="alert-head">
+            <span class="tag warn">${loss ? 'PKTS' : 'CPU'}</span>
+            <span class="alert-name">${a.server_name}</span>
+            <span class="feed-time">${timeAgo(a.timestamp)}</span>
+          </div>
+          <p class="alert-detail">${a.details}</p>
+          <div class="alert-meta"><span class="mono">${a.cpu}% CPU</span><span class="mono">${a.packet_loss}% loss</span><span class="mono">${a.match_id}</span></div>
+        </div>`;
+      }).join('');
+    }
+
+    // ============================================================
+    // Charts (Chart.js)
+    // ============================================================
+    let throughputChart, pingChart, cpuChart;
+    const cpuHistory = [];
+    function initCharts() {
+      const mono = { size: 10, family: "ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" };
+      const tooltip = { backgroundColor: '#1c212a', borderColor: '#333b48', borderWidth: 1, titleColor: '#eef1f6', bodyColor: '#c7ccd6' };
+      const ttCtx = document.getElementById('throughput-chart').getContext('2d');
+      const grad = ttCtx.createLinearGradient(0, 0, 0, 155);
+      grad.addColorStop(0, 'rgba(91,141,239,0.22)');
+      grad.addColorStop(1, 'rgba(91,141,239,0)');
+      throughputChart = new Chart(ttCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], borderColor: C.accent, borderWidth: 2, fill: true, backgroundColor: grad, tension: 0.3, pointRadius: 0 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip },
+          scales: {
+            x: { display: false },
+            y: { beginAtZero: true, ticks: { color: C.axis, font: mono }, grid: { color: C.grid } },
+          },
+        },
+      });
+      const pCtx = document.getElementById('ping-chart').getContext('2d');
+      pingChart = new Chart(pCtx, {
+        type: 'bar',
+        data: { labels: ['0-50','51-100','101-150','151-200','200+'], datasets: [{ data: [0,0,0,0,0], backgroundColor: C.accent, borderRadius: 4, barPercentage: 0.65 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip },
+          scales: {
+            x: { ticks: { color: C.axis, font: mono }, grid: { display: false } },
+            y: { beginAtZero: true, ticks: { color: C.axis, font: mono }, grid: { color: C.grid } },
+          },
+        },
+      });
+      const cCtx = document.getElementById('cpu-chart').getContext('2d');
+      const cGrad = cCtx.createLinearGradient(0, 0, 0, 125);
+      cGrad.addColorStop(0, 'rgba(224,168,58,0.2)');
+      cGrad.addColorStop(1, 'rgba(224,168,58,0)');
+      cpuChart = new Chart(cCtx, {
+        type: 'line',
+        data: { labels: [], datasets: [{ data: [], borderColor: C.warn, borderWidth: 2, fill: true, backgroundColor: cGrad, tension: 0.3, pointRadius: 0 }] },
+        options: {
+          responsive: true, maintainAspectRatio: false, animation: false,
+          plugins: { legend: { display: false }, tooltip },
+          scales: {
+            x: { display: false },
+            y: { min: 0, max: 100, ticks: { color: C.axis, font: { size: 9, family: "ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" }, stepSize: 25 }, grid: { color: C.grid } },
+          },
+        },
+      });
+    }
+
+    function renderCharts() {
+      if (!throughputChart) return;
+      const hist = stats?.throughput_history || [];
+      throughputChart.data.labels = hist.map((_, i) => i);
+      throughputChart.data.datasets[0].data = hist.map(h => h.eps);
+      throughputChart.update('none');
+      const buckets = stats?.ping_buckets || [];
+      pingChart.data.datasets[0].data = buckets.map(b => b.count);
+      pingChart.update('none');
+      if (cpuChart) {
+        cpuHistory.push(stats?.avg_cpu ?? 0);
+        if (cpuHistory.length > 60) cpuHistory.shift();
+        cpuChart.data.labels = cpuHistory.map((_, i) => i);
+        cpuChart.data.datasets[0].data = cpuHistory;
+        cpuChart.update('none');
+      }
+    }
+
+    // ============================================================
+    // Socket.io event wiring
+    // ============================================================
+    socket.on('connect', () => {
+      document.getElementById('conn-dot').className = 'dot pulse-dot';
+      document.getElementById('conn-dot').style.background = 'var(--ok)';
+      document.getElementById('conn-text').textContent = 'Stream conectado';
+      document.getElementById('conn-badge').className = 'badge ok';
+      document.getElementById('connecting-banner').style.display = 'none';
+    });
+    socket.on('disconnect', () => {
+      document.getElementById('conn-dot').className = 'dot';
+      document.getElementById('conn-dot').style.background = 'var(--crit)';
+      document.getElementById('conn-text').textContent = 'Desconectado';
+      document.getElementById('conn-badge').className = 'badge crit';
+    });
+
+    socket.on('state:snapshot', (snap) => {
+      players = new Map(snap.players.map(p => [p.id, p]));
+      matches = snap.matches || [];
+      alerts = snap.alerts || [];
+      servers = snap.servers || [];
+      serverAlerts = snap.serverAlerts || [];
+      stats = snap.stats;
+      producerRunning = snap.producerRunning;
+      serverProducerRunning = snap.serverProducerRunning !== false;
+      clientCount = snap.clientCount;
+      document.getElementById('producer-toggle').checked = producerRunning;
+      document.getElementById('producer-status').textContent = producerRunning ? 'LIVE' : 'HOLD';
+      document.getElementById('producer-status').className = 'mono ' + (producerRunning ? 'ok-t' : 'mute-t');
+      document.getElementById('server-producer-toggle').checked = serverProducerRunning;
+      document.getElementById('server-producer-status').textContent = serverProducerRunning ? 'LIVE' : 'HOLD';
+      document.getElementById('server-producer-status').className = 'mono ' + (serverProducerRunning ? 'ok-t' : 'mute-t');
+      document.getElementById('client-slider').value = clientCount;
+      document.getElementById('client-value').textContent = clientCount;
+      renderStats();
+      renderMinimap();
+      renderMatchmaking();
+      renderAlerts();
+      renderServers();
+      renderServerAlerts();
+      renderCharts();
+    });
+
+    socket.on('players:update', (ps) => {
+      for (const p of ps) players.set(p.id, p);
+      renderMinimap();
+      renderMatchmaking();
+    });
+
+    socket.on('servers:update', (svs) => {
+      servers = svs;
+      renderServers();
+    });
+
+    socket.on('server:alert', (a) => {
+      serverAlerts = [a, ...serverAlerts].slice(0, 40);
+      renderServerAlerts();
+    });
+
+    socket.on('servers:cleared', () => {
+      serverAlerts = [];
+      renderServerAlerts();
+    });
+
+    socket.on('telemetry:feed', (events) => {
+      renderFeed(events);
+    });
+
+    const addEventBtn = document.getElementById('btn-add-event');
+    if (addEventBtn) {
+      addEventBtn.addEventListener('click', () => {
+        socket.emit('control', { type: 'add-event', count: 12 });
+      });
+    }
+
+    socket.on('matchmaking:match-formed', (m) => {
+      matches = [m, ...matches];
+      renderMatchmaking();
+    });
+
+    socket.on('cheat:alert', (a) => {
+      alerts = [a, ...alerts].slice(0, 50);
+      const p = players.get(a.player_id);
+      if (p) { p.is_cheater = true; p.flagged_reasons.push(a.reason); players.set(p.id, p); }
+      renderAlerts();
+      renderMinimap();
+    });
+
+    socket.on('stats:update', (s) => {
+      stats = s;
+      renderStats();
+      renderCharts();
+      document.getElementById('eps-badge').textContent = (s.events_per_second || 0) + '/s';
+    });
+
+    socket.on('alerts:cleared', () => {
+      alerts = [];
+      for (const p of players.values()) p.flagged_reasons = [];
+      renderAlerts();
+      renderMinimap();
+    });
+
+    socket.on('producer:status', ({ running }) => {
+      producerRunning = running;
+      document.getElementById('producer-toggle').checked = running;
+      document.getElementById('producer-status').textContent = running ? 'LIVE' : 'HOLD';
+      document.getElementById('producer-status').className = 'mono ' + (running ? 'ok-t' : 'mute-t');
+    });
+
+    socket.on('server-producer:status', ({ running }) => {
+      serverProducerRunning = running;
+      document.getElementById('server-producer-toggle').checked = running;
+      document.getElementById('server-producer-status').textContent = running ? 'LIVE' : 'HOLD';
+      document.getElementById('server-producer-status').className = 'mono ' + (running ? 'ok-t' : 'mute-t');
+    });
+
+    // ============================================================
+    // Controls
+    // ============================================================
+    document.getElementById('producer-toggle').addEventListener('change', (e) => {
+      socket.emit('control', { type: 'toggle-producer', running: e.target.checked });
+    });
+    document.getElementById('btn-inject').addEventListener('click', () => {
+      socket.emit('control', { type: 'inject-cheater' });
+    });
+    const btnSyncRedis2 = document.getElementById('btn-sync-redis');
+    if (btnSyncRedis2) {
+      btnSyncRedis2.addEventListener('click', () => {
+        socket.emit('control', { type: 'sync-redis' });
+        btnSyncRedis2.disabled = true;
+        setTimeout(() => (btnSyncRedis2.disabled = false), 800);
+      });
+    }
+    document.getElementById('btn-clear').addEventListener('click', () => {
+      socket.emit('control', { type: 'clear-alerts' });
+    });
+    document.getElementById('btn-clear-2').addEventListener('click', () => {
+      socket.emit('control', { type: 'clear-alerts' });
+    });
+    document.getElementById('btn-srv-clear').addEventListener('click', () => {
+      socket.emit('control', { type: 'clear-alerts' });
+    });
+    document.getElementById('server-producer-toggle').addEventListener('change', (e) => {
+      socket.emit('control', { type: 'toggle-server-producer', running: e.target.checked });
+    });
+    const slider = document.getElementById('client-slider');
+    slider.addEventListener('input', (e) => {
+      document.getElementById('client-value').textContent = e.target.value;
+    });
+    slider.addEventListener('change', (e) => {
+      socket.emit('control', { type: 'set-clients', count: parseInt(e.target.value, 10) });
+    });
+
+    // initial render
+    initCharts();
+    renderPipeline();
+    renderStats();
+
+    // --- fetch Spark engine status ---
+    async function fetchSparkStatus() {
+      try {
+        const res = await fetch('/spark?XTransformPort=3003');
+        const data = await res.json();
+        document.getElementById('spark-version').textContent = 'Spark ' + data.version;
+        document.getElementById('spark-batches').textContent = data.batchesProcessed + ' batches';
+      } catch (e) { /* ignore */ }
+    }
+    fetchSparkStatus();
+    setInterval(fetchSparkStatus, 3000);
+
+    // --- fetch Kafka transport status ---
+    async function fetchKafkaStatus() {
+      try {
+        const res = await fetch('/kafka?XTransformPort=3003');
+        const data = await res.json();
+        document.getElementById('kafka-topic').textContent = data.topic;
+        const conn = document.getElementById('kafka-conn');
+        if (data.producerOk && data.ingestAlive) {
+          conn.textContent = 'live';
+          conn.className = 'ok-t';
+          document.getElementById('kafka-label').textContent = data.bootstrapServers;
+        } else if (data.producerFallback || !data.producerOk) {
+          conn.textContent = 'fallback';
+          conn.className = 'warn-t';
+          document.getElementById('kafka-label').textContent = data.bootstrapServers;
+        } else {
+          conn.textContent = 'offline';
+          conn.className = 'crit-t';
+        }
+      } catch (e) { /* ignore */ }
+    }
+    fetchKafkaStatus();
+    setInterval(fetchKafkaStatus, 3000);
+
+    // periodic refresh of time-sensitive UI
+    setInterval(() => {
+      renderMatchmaking();
+      renderAlerts();
+      renderServerAlerts();
+    }, 3000);
+  </script>
+</body>
+</html>
