@@ -42,12 +42,12 @@ class GameState:
         self.alerts: list[CheatAlert] = []
         self.flagged_players: set[str] = set()
         self.servers: dict[str, ServerInfo] = {}
-        self.pending_server_events: list = []  # drained by the consumer (Kafka-backed)
+        self.pending_server_events: list = []  # agotado por el consumidor (respaldado por Kafka)
         self.server_alerts: list[ServerAlert] = []
         self.total_events = 0
         self.matches_formed = 0
-        self.event_timestamps: list[float] = []  # sliding window for throughput
-        # pipeline health, so a frozen loop is visible from /health and /spark
+        self.event_timestamps: list[float] = []
+        # estado del pipeline; por tanto, un bucle bloqueado resulta visible desde /health y /spark
         self.last_batch_at: float = 0.0
         self.last_batch_ms: float = 0.0
         self.pipeline_alive: bool = False
@@ -90,12 +90,10 @@ class GameState:
         self.event_timestamps.append(_now())
 
     def append_server_event(self, ev) -> None:
-        """Thread-safe append from the Kafka ingest thread / fallback producer."""
         with _server_buf_lock:
             self.pending_server_events.append(ev)
 
     def drain_server_events(self) -> list:
-        """Thread-safe drain of the Kafka-ingested server metric events."""
         with _server_buf_lock:
             out = self.pending_server_events
             self.pending_server_events = []
@@ -108,10 +106,9 @@ class GameState:
         del self.server_alerts[max_count:]
 
     def prune_matches(self, duration_ms: int = 25000) -> list[GameMatch]:
-        """Remove finished matches and send their players back to the queue.
-
-        Returns the list of ended matches so the consumer can notify the
-        producer to stop their timers.
+        """Elimina las partidas finalizadas y devuelve a sus jugadores a la cola.
+        Devuelve la lista de partidas terminadas para que el consumidor pueda notificar al
+        productor que detenga sus temporizadores.
         """
         now = _now()
         remaining: list[GameMatch] = []
@@ -131,7 +128,7 @@ class GameState:
                         p.deaths = 0
                         p.flagged_reasons = []
                         self.flagged_players.discard(p.id)
-                        # small chance to become a cheater next round
+                        # pequeña probabilidad de convertirse en tramposo en la siguiente ronda
                         p.is_cheater = random.random() < 0.08
                         p.x = random.random() * 1000
                         p.y = random.random() * 1000
@@ -143,7 +140,7 @@ class GameState:
     def stats(self, throughput_history: list | None = None) -> StatsSnapshot:
         now = _now()
         one_second_ago = now - 1000
-        # prune old timestamps (keep last 30s for the window)
+        # eliminar marcas de tiempo antiguas.
         cutoff = now - 30000
         self.event_timestamps = [t for t in self.event_timestamps if t >= cutoff]
         eps = sum(1 for t in self.event_timestamps if t >= one_second_ago)

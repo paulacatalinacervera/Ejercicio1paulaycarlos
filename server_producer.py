@@ -56,13 +56,15 @@ class ServerProducer:
                 max_block_ms=1500,
             )
         except Exception as exc:  # noqa: BLE001
-            self._kafka_error = f"Kafka unavailable → in-memory fallback: {exc}"
+            self._kafka_error = f"Kafka no disponible → alternativa en memoria: {exc}"
             self.fallback = True
             self._kafka_producer = None
 
     def _broker_reachable(self) -> bool:
-        """TCP probe to the bootstrap server: cheap + honest health check that
-        doesn't depend on KafkaProducer's lazy connection behavior."""
+        """Sondeo TCP al servidor de arranque (*bootstrap server*):
+        una comprobación de estado económica y fiable que no depende
+        del comportamiento de conexión diferida (*lazy connection*)
+        de `KafkaProducer`."""
         try:
             import socket
 
@@ -74,9 +76,11 @@ class ServerProducer:
             return False
 
     def _maybe_reconnect(self) -> None:
-        """If the producer is in fallback, retry the broker every 5s. Once the
-        broker is reachable again this re-creates the producer and clears the
-        fallback, so the pipeline recovers without recreating the container."""
+        """Si el productor se encuentra en modo de respaldo (*fallback*),
+        se reintentará la conexión con el *broker* cada 5 segundos. Una
+        vez que el *broker* vuelve a estar accesible, el productor se recrea
+        y se desactiva el modo de respaldo; de este modo, el flujo de procesamiento
+        (*pipeline*) se recupera sin necesidad de recrear el contenedor."""
         if not self.fallback or self.kafka_ok:
             return
         now = time.time()
@@ -89,7 +93,7 @@ class ServerProducer:
         if self.kafka_ok:
             self.fallback = False
             self._kafka_error = None
-            print(f"[server_producer] reconnected to Kafka @ {KAFKA_BROKER}", flush=True)
+            print(f"[server_producer] reconectado con Kafka @ {KAFKA_BROKER}", flush=True)
 
     @property
     def kafka_ok(self) -> bool:

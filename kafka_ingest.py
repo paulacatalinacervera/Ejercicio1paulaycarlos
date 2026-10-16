@@ -33,7 +33,7 @@ class KafkaIngest(threading.Thread):
     def run(self) -> None:
         while not self._stop.is_set():
             try:
-                from kafka import KafkaConsumer  # type: ignore
+                from kafka import KafkaConsumer
 
                 self._consumer = KafkaConsumer(
                     self.topic,

@@ -22,11 +22,10 @@ def _uid(prefix: str) -> str:
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
-
 class Producer:
     def __init__(self, state: GameState) -> None:
         self.state = state
-        self.rate = 1.5          # events / sec per client
+        self.rate = 1.5          # eventos / seg por cliente
         self.running = True
         self.target_clients = 40
         self.pending_events: list[TelemetryEvent] = []
@@ -41,7 +40,6 @@ class Producer:
 
     def set_rate(self, rate: float) -> None:
         self.rate = max(0.3, min(6.0, rate))
-        # restart timers so new rate takes effect
         self._cancel_all_tasks()
         for p in self.state.players.values():
             if p.status == "in_match":
@@ -137,7 +135,7 @@ class Producer:
             if random.random() < 0.5:
                 self._emit_kill_event(p)
 
-    # --- movement & event emission ---
+    # --- movimiento y emisión de eventos ---
     def _move_player(self, p: Player, dt: float) -> None:
         dx = p.target_x - p.x
         dy = p.target_y - p.y
@@ -149,7 +147,7 @@ class Producer:
         speed = MAX_NORMAL_SPEED
         if p.is_cheater:
             if random.random() < TELEPORT_PROBABILITY:
-                # TELEPORT: jump to a random location
+                # TELETRANSPORTARSE: saltar a una ubicación aleatoria
                 p.x = random.random() * 1000
                 p.y = random.random() * 1000
                 return

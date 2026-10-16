@@ -9,9 +9,6 @@ import sys
 import traceback
 from pathlib import Path
 
-# PySpark spawns Python worker subprocesses. On Windows `python` may resolve
-# to the Microsoft Store shim, which makes every Spark job fail with
-# "Python worker failed to connect back". Pin workers to this interpreter.
 os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
@@ -32,7 +29,7 @@ from models import ACTIONS
 PORT = int(os.environ.get("PORT", "3003"))
 HERE = Path(__file__).resolve().parent
 
-# --- socket.io server (ASGI) ---
+##FastAPI + Socket.IO app
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins="*",
@@ -43,12 +40,7 @@ app = FastAPI(title="Telemetry & Matchmaking")
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 asgi_app = socketio.ASGIApp(sio, other_asgi_app=app)
 
-
-# --- Apache Spark session (real Spark engine) ---
-# SPARK_MASTER lets you attach the app to a standalone cluster so it shows up
-# in the Spark Master / History UI, e.g. SPARK_MASTER=spark://localhost:7077
-# The remote master MUST run the same Spark version as PySpark (RPC is not
-# backwards compatible across versions).
+#--- Sesión de Apache Spark ---
 SPARK_MASTER = os.environ.get("SPARK_MASTER", "local[4]")
 spark = (
     SparkSession.builder.appName("TelemetryMatchmaking")
@@ -69,8 +61,7 @@ SPARK_APP_ID = spark.sparkContext.applicationId
 SPARK_UI_URL = spark.sparkContext.uiWebUrl
 SPARK_MASTER_URL = spark.sparkContext.master
 
-
-# --- core pipeline ---
+#Flujo del pipeline: productor -> consumidor -> Spark -> productor de servidor -> consumidor de servidor
 state = GameState()
 producer = Producer(state)
 server_producer = ServerProducer(state)
@@ -78,7 +69,7 @@ consumer = Consumer(state, producer, spark, server_producer=server_producer)
 kafka_ingest = KafkaIngest(state)
 redis_store = RedisStore()
 
-# seed initial pool
+#--- inicialización ---
 producer.set_client_count(40)
 
 throughput_history: list[dict] = []
@@ -88,11 +79,9 @@ last_player_emit = 0.0
 last_stats_emit = 0.0
 last_reconcile = 0.0
 
-
 def _prepend_feed(feed_dicts: list[dict]) -> None:
     global recent_feed
     recent_feed = (feed_dicts + recent_feed)[:80]
-
 
 def _make_feed_events(count: int = 12) -> list[dict]:
     players = list(state.players.values())
@@ -125,17 +114,15 @@ def _make_feed_events(count: int = 12) -> list[dict]:
             )
     return events
 
-
+#
 async def _in_thread(fn, *args):
-    """asyncio.to_thread() exists only on Python 3.9+; the Spark 3.5.1 image
-    ships Python 3.8, so fall back to the executor loop."""
     if hasattr(asyncio, "to_thread"):
         return await asyncio.to_thread(fn, *args)
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, functools.partial(fn, *args))
 
 
-# --- HTTP routes ---
+# --- Rutas HTTP ---
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     html = (HERE / "templates" / "index.html").read_text(encoding="utf-8")
@@ -205,7 +192,7 @@ async def redis_status() -> JSONResponse:
     return JSONResponse(redis_store.summary())
 
 
-# --- main consumer loop (1s micro-batch, mirrors Spark streaming) ---
+# --- bucle principal de consumo (micro-lotes de 1 s) ---
 async def _pipeline_tick(
     batch: list, server_batch: list, ended_matches: list, now: float
 ) -> None:
@@ -216,13 +203,13 @@ async def _pipeline_tick(
         last_reconcile = now
         producer._reconcile()
 
-    # 1. drain produced events + reduce (cheap, stays on the loop)
+    # 1. vaciar los eventos generados + reducir (de bajo costo, permanece en el bucle)
     feed_events = consumer.reduce_batch(batch)
     position_events = [e for e in batch if e.type == "position"]
     if position_events:
-        # 2. SPARK cheat detection. The job blocks for a few hundred ms, so it
-        #    runs in a worker thread via to_thread; running it inline froze the
-        #    whole event loop (HTTP /health and socket.io stopped answering).
+        # 2. Detección de trampas en SPARK. La tarea se bloquea durante unos cientos de milisegundos, por lo que
+        #    se ejecuta en un hilo de trabajo mediante `to_thread`; ejecutarla de forma síncrona (en el mismo hilo) bloqueaba
+        #    todo el bucle de eventos (las peticiones HTTP `/health` y socket.io dejaban de responder).
         try:
             new_alerts = await _in_thread(
                 consumer._detect_cheats_spark, position_events
@@ -241,7 +228,7 @@ async def _pipeline_tick(
     for alert in new_alerts:
         await sio.emit("cheat:alert", alert.to_dict())
 
-    # 2-bis. SERVER TELEMETRY (Kafka-backed): reduce + Spark anomaly detection
+    # 2-Telemetría del servidor (respaldada por Kafka): reduce + detección de anomalías con Spark
     consumer.reduce_server_batch(server_batch)
     if server_batch:
         try:
@@ -257,9 +244,9 @@ async def _pipeline_tick(
     for alert in server_alerts:
         await sio.emit("server:alert", alert.to_dict())
 
-    # 3. matchmaking: Spark groupBy + window off the loop, then the mutation
-    #    half on the loop thread (it calls producer.on_player_enter_match(),
-    #    which needs the running loop).
+    # 3. Emparejamiento (matchmaking): `groupBy` + `window` de Spark fuera del bucle, seguidos de la mutación;
+    #    esta última se ejecuta parcialmente en el hilo del bucle (ya que invoca a `producer.on_player_enter_match()`,
+    #    lo cual requiere que el bucle esté en ejecución).
     try:
         ranked_regions = await _in_thread(consumer.rank_queue_spark)
         new_matches = consumer.form_matches(ranked_regions)
@@ -270,7 +257,7 @@ async def _pipeline_tick(
     for match in new_matches:
         await sio.emit("matchmaking:match-formed", match.to_dict())
 
-    # 4. prune ended matches, notify producer to stop their timers
+    # 4. Eliminar los enfrentamientos finalizados y notificar al productor para que detenga sus temporizadores.
     for m in ended_matches:
         ended_players = [state.players[pid] for pid in m.players if pid in state.players]
         consumer.on_match_ended(m, ended_players)
@@ -288,10 +275,10 @@ async def pipeline_loop() -> None:
             # periodic broadcasts
             await _broadcasts(now)
 
-            # persist live state to Redis (throttled inside the store)
+            # persistir el estado en tiempo real en Redis (con limitación de tasa dentro del almacén)
             await _in_thread(redis_store.sync, state)
 
-            # health marker (drives the "live" badge and /health)
+            # indicador de estado de salud (determina la etiqueta «activo» y el endpoint /health)
             state.pipeline_alive = True
             state.last_batch_at = time.time() * 1000
             state.last_batch_ms = state.last_batch_at - now
@@ -321,7 +308,7 @@ async def _broadcasts(now: float) -> None:
         await sio.emit("stats:update", stats.to_dict())
 
 
-# --- socket.io handlers ---
+# --- manejadores de socket.io ---
 @sio.event
 async def connect(sid, environ):  # noqa: ANN001
     print(f"[dashboard] connected: {sid}")
@@ -347,12 +334,12 @@ async def connect(sid, environ):  # noqa: ANN001
 
 
 @sio.event
-async def disconnect(sid):  # noqa: ANN001
+async def disconnect(sid):
     print(f"[dashboard] disconnected: {sid}")
 
 
 @sio.on("control")
-async def on_control(sid, data):  # noqa: ANN001
+async def on_control(sid, data):
     msg_type = data.get("type")
     if msg_type == "set-clients":
         producer.set_client_count(int(data.get("count", 40)))
@@ -395,7 +382,7 @@ async def on_control(sid, data):  # noqa: ANN001
             await sio.emit("telemetry:feed", events)
 
 
-# --- startup: kick off the pipeline loop ---
+# --- inicio: arrancar el bucle de la canalización ---
 @app.on_event("startup")
 async def _startup() -> None:
     asyncio.create_task(pipeline_loop())
@@ -425,8 +412,8 @@ async def _shutdown() -> None:
 if __name__ == "__main__":
     import uvicorn
 
-    # reload is off by default: the reloader re-imports this module on every
-    # file change, which recreates the SparkSession and leaks JVMs/workers.
+    # La recarga está desactivada por defecto: el mecanismo de recarga vuelve a importar este módulo
+    # ante cada cambio de archivo, lo que recrea la SparkSession y provoca fugas de JVM/workers.
     uvicorn.run(
         "app:asgi_app",
         host="0.0.0.0",

@@ -105,7 +105,7 @@ class CheatAlert:
 
 @dataclass
 class ServerMetricEvent:
-    """Server-side telemetry record (published to Kafka by the ServerProducer)."""
+    """Registro de telemetría del lado del servidor (publicado en Kafka por el ServerProducer)."""
     id: str
     server_id: str
     server_name: str
@@ -124,7 +124,6 @@ class ServerMetricEvent:
 
 @dataclass
 class ServerInfo:
-    """Current aggregated state of a running game server (one per live match)."""
     id: str
     name: str
     region: str
@@ -145,7 +144,7 @@ class ServerInfo:
 
 @dataclass
 class ServerAlert:
-    """Spark-flagged server anomaly (CPU spike / packet loss)."""
+    """Anomalía en el servidor detectada por Spark (pico de CPU / pérdida de paquetes)."""
     id: str
     server_id: str
     server_name: str

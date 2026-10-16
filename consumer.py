@@ -41,7 +41,7 @@ def _alert_id() -> str:
 def _match_id() -> str:
     return f"m_{next(_match_seq)}"
 
-# --- Spark schemas (explicit, so nullable fields work with createDataFrame) ---
+# --- Esquemas de Spark (explícitos, para que los campos que admiten valores nulos funcionen con createDataFrame) ---
 _LAST_POS_SCHEMA = StructType([
     StructField("player_id", StringType(), False),
     StructField("x", DoubleType(), False),
@@ -67,7 +67,6 @@ _SERVER_METRIC_SCHEMA = StructType([
 ])
 
 class Consumer:
-    """Spark-backed consumer. Same public interface as the pure-Python one."""
 
     def __init__(
         self,
@@ -80,10 +79,10 @@ class Consumer:
         self.producer = producer
         self.server_producer = server_producer
         self.spark = spark
-        # "last known position" table. Kept as plain rows on the driver and
-        # rebuilt into a DataFrame every batch: keeping it as a DataFrame made
-        # the plan grow by one union + one window per batch (Stage 143, 145,
-        # 157...) until each job became enormous.
+        # Tabla de «última posición conocida». Se mantenía como filas simples en el driver y
+        # se reconstruía como un DataFrame en cada lote (batch); mantenerla como un DataFrame provocaba
+        # que el plan creciera añadiendo una operación `union` y una operación `window` por cada lote
+        # (etapas 143, 145, 157...), hasta que cada trabajo (job) terminaba siendo enorme.
         self._last_pos_rows: list[tuple] = []
         self._last_server_rows: list[tuple] = []
         # server ids that already have a live anomaly alert (one alert per episode)
@@ -91,18 +90,12 @@ class Consumer:
         self.batches_processed = 0
         self.last_error: str | None = None
 
-    # ------------------------------------------------------------------ #
-    # process(): reduce + Spark cheat detection
-    # Returns (feed_events, new_alerts)
-    # ------------------------------------------------------------------ #
     def reduce_batch(self, batch: list[TelemetryEvent]) -> list[TelemetryEvent]:
-        """Driver-side reduce: apply kills/deaths/ping/pos to player state.
-
-        Cheap and non-blocking, so it stays on the event loop.
-        """
+        """Reducción en el lado del conductor: aplica bajas, muertes, ping y posición al estado del jugador.
+        Es una operación económica y no bloqueante, por lo que permanece en el bucle de eventos."""
         self.batches_processed += 1
 
-        # --- 3. REDUCE: apply kills/deaths/ping/pos to player state (driver) ---
+       # --- 3. REDUCIR: aplicar eliminaciones/muertes/ping/posición al estado del jugador (controlador) ---
         for ev in batch:
             p = self.state.players.get(ev.player_id)
             if not p:
@@ -118,13 +111,13 @@ class Consumer:
             p.y = ev.y
             p.last_event_at = ev.timestamp
 
-        # --- feed events for the dashboard ---
+        # --- alimentar eventos para el panel de control ---
         feed = [e for e in batch if e.type in ("kill", "action", "death")]
         feed.reverse()
         return feed[-40:]
 
     def process(self, batch: list[TelemetryEvent]) -> tuple[list[TelemetryEvent], list[CheatAlert]]:
-        """Synchronous convenience wrapper: reduce, then Spark cheat detection."""
+        """detección de trampas en Spark"""
         feed = self.reduce_batch(batch)
         position_events = [e for e in batch if e.type == "position"]
         if not position_events:
@@ -132,7 +125,7 @@ class Consumer:
         return feed, self._detect_cheats_spark(position_events)
 
     def _detect_cheats_spark(self, position_events: list[TelemetryEvent]) -> list[CheatAlert]:
-        """Use a Spark window function (lag) to detect impossible movement."""
+        """Utiliza una función de ventana de Spark (`lag`) para detectar movimientos imposibles."""
         now = time.time() * 1000
 
         # Build a DataFrame of this batch's position events
@@ -142,9 +135,6 @@ class Consumer:
         ]
         batch_pos_df = self.spark.createDataFrame(batch_rows, schema=_LAST_POS_SCHEMA)
 
-        # Union with the last known positions so lag() can see the previous
-        # position even across batch boundaries. Flat plan: the history lives
-        # in `self._last_pos_rows` (driver side), not in the DataFrame lineage.
         if self._last_pos_rows:
             prev_pos_df = self.spark.createDataFrame(
                 self._last_pos_rows, schema=_LAST_POS_SCHEMA
@@ -153,10 +143,10 @@ class Consumer:
         else:
             combined = batch_pos_df
 
-        # Window: partition by player, order by timestamp
+        #Ventana: partición por jugador, orden por marca de tiempo
         w = Window.partitionBy("player_id").orderBy("ts")
 
-        # lag() gives us the previous position per player
+        # lag() nos proporciona la posición anterior por jugador
         with_lag = (
             combined
             .withColumn("prev_x", F.lag("x").over(w))
@@ -164,7 +154,6 @@ class Consumer:
             .withColumn("prev_t", F.lag("ts").over(w))
         )
 
-        # Compute Euclidean distance and speed (units/sec)
         with_metrics = (
             with_lag
             .withColumn(
@@ -181,8 +170,8 @@ class Consumer:
             )
         )
 
-        # Filter: rows that have a previous position AND violate the rules.
-        # These are potential cheaters from THIS batch.
+        # Filtro: filas que tienen una posición previa Y que infringen las reglas. 
+        # Se trata de posibles tramposos de ESTE lote.
         cheaters_df = with_metrics.filter(
             F.col("prev_x").isNotNull()
             & (
@@ -193,7 +182,7 @@ class Consumer:
             "player_id", "x", "y", "ts", "prev_t", "distance", "speed"
         )
 
-        # Collect results to the driver and build CheatAlert objects
+        # Recopilar los resultados en el nodo controlador y crear objetos CheatAlert
         new_alerts: list[CheatAlert] = []
         for row in cheaters_df.collect():
             p = self.state.players.get(row.player_id)
@@ -224,10 +213,10 @@ class Consumer:
             self.state.prune_alerts()
             new_alerts.append(alert)
 
-        # --- Update the last known positions (materialized to the driver) ---
-        # Keep only the latest position per player (drop stale rows) and drop
-        # players that left the pool, so the table stays small and the next
-        # batch's plan stays flat.
+        # --- Actualizar las últimas posiciones conocidas (materializadas para el driver) ---
+        # Conservar únicamente la posición más reciente por jugador (descartar filas obsoletas) y eliminar
+        # a los jugadores que han abandonado el conjunto, de modo que la tabla se mantenga pequeña y el plan
+        # del siguiente lote permanezca sencillo.
         latest_w = Window.partitionBy("player_id").orderBy(F.col("ts").desc())
         current_ids = set(self.state.players.keys())
         self._last_pos_rows = [
@@ -243,14 +232,11 @@ class Consumer:
 
         return new_alerts
 
-    # ------------------------------------------------------------------ #
-    # Server telemetry (Kafka-backed): reduce + Spark anomaly detection
-    # ------------------------------------------------------------------ #
+    # Telemetría del servidor (respaldada por Kafka): reducción + detección de anomalías con Spark
     def _server_bad(self, s) -> bool:
         return s.cpu >= SERVER_CPU_SPIKE or s.packet_loss > SERVER_PACKET_LOSS
 
     def reduce_server_batch(self, events: list[ServerMetricEvent]) -> None:
-        """Apply Kafka-ingested server metrics to the ServerInfo state. Driver-side."""
         for ev in events:
             info = self.state.servers.get(ev.server_id)
             if not info:
@@ -268,7 +254,7 @@ class Consumer:
     def _detect_server_anomalies_spark(
         self, events: list[ServerMetricEvent]
     ) -> list[ServerAlert]:
-        """Use a Spark window function (lag) to flag CPU spikes / packet loss."""
+        """Utiliza una función de ventana de Spark (lag) para marcar los picos de CPU o la pérdida de paquetes."""
         now = time.time() * 1000
         rows = [
             (e.server_id, float(e.cpu), float(e.packet_loss), float(e.tick_rate), float(e.timestamp))
@@ -345,12 +331,12 @@ class Consumer:
 
         return new_alerts
 
-    # ------------------------------------------------------------------ #
-    # run_matchmaking(): split in two so the blocking Spark part can run off
-    # the event loop (it only reads state) while the mutation part — which
-    # calls producer.on_player_enter_match() and therefore needs the
-    # asyncio loop thread — stays on the loop.
-    # ------------------------------------------------------------------ #
+    # run_matchmaking(): dividido en dos partes para que la sección bloqueante
+    # de Spark pueda ejecutarse fuera del bucle de eventos (ya que solo lee
+    # el estado), mientras que la parte de mutación —que llama a
+    # producer.on_player_enter_match() y, por tanto, requiere el hilo del
+    # bucle asyncio— permanece en dicho bucle.
+    
     #agrupa y ordena la cola
     def rank_queue_spark(self) -> list[tuple]:
         """SPARK: group the queue by region and rank by skill.
@@ -362,19 +348,17 @@ class Consumer:
         if len(queued) < MATCH_SIZE:
             return []
 
-        # --- 2. SPARK: load queued players, group by region, rank by skill ---
+        # --- 2. SPARK: cargar jugadores en espera, agrupar por región, clasificar según su nivel de habilidad ---
         rows = [
             (p.id, p.name, int(p.skill), int(p.ping), p.region, float(p.queue_enter_at))
             for p in queued
         ]
         df = self.spark.createDataFrame(rows, schema=_QUEUE_SCHEMA)
 
-        # Window: partition by region, order by skill → row_number gives a
-        # stable skill rank inside each region.
         region_skill_w = Window.partitionBy("region").orderBy("skill")
         ranked = df.withColumn("skill_rank", F.row_number().over(region_skill_w))
 
-        # Collect per-region player lists (already sorted by skill_rank)
+        # Recopilar listas de jugadores por región (ya ordenadas por skill_rank)
         region_rows = ranked.groupBy("region").agg(
             F.collect_list(
                 F.struct(
@@ -397,7 +381,7 @@ class Consumer:
                 continue
             players_in_region = list(ranked_players)
 
-            # --- driver-side windowing: form 3v3 matches within skill/ping spread ---
+            # --- ventana de emparejamiento: buscar partidas 3v3 dentro de un rango determinado de habilidad/ping ---
             i = 0
             while i + MATCH_SIZE <= len(players_in_region):
                 window = players_in_region[i : i + MATCH_SIZE]
@@ -456,7 +440,6 @@ class Consumer:
         return new_matches
 
     def run_matchmaking(self) -> list[GameMatch]:
-        """Synchronous convenience wrapper (loop-thread only)."""
         return self.form_matches(self.rank_queue_spark())
 
     def on_match_ended(self, match: GameMatch, players: list[Player]) -> None:

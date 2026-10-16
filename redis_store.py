@@ -47,7 +47,7 @@ class RedisStore:
     def _connect(self) -> None:
         self._last_connect = time.time()
         try:
-            self._client = redis.Redis.from_url(  # type: ignore[union-attr]
+            self._client = redis.Redis.from_url(
                 self.url,
                 decode_responses=True,
                 socket_connect_timeout=1.0,
@@ -56,7 +56,7 @@ class RedisStore:
             self._client.ping()
             self._error = None
             print(f"[redis] connected @ {self.url} (prefix {self.prefix!r})", flush=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._client = None
             self._error = f"Redis unavailable: {exc}"
 
@@ -79,7 +79,7 @@ class RedisStore:
         return self.prefix + "player:" + pid
 
     # --- escritura ---
-    def sync(self, state, force: bool = False) -> bool:  # noqa: ANN001
+    def sync(self, state, force: bool = False) -> bool:
         """Vuelca el estado a Redis. Devuelve True si escribio."""
         self._maybe_reconnect()
         if self._client is None:
@@ -146,7 +146,7 @@ class RedisStore:
             )
 
             pipe.execute()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._client = None
             self._error = f"Redis write failed: {exc}"
             return False
@@ -177,6 +177,6 @@ class RedisStore:
                     "stats": self._client.hgetall(self.key_stats),
                 }
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             base["error"] = f"Redis read failed: {exc}"
         return base
