@@ -8,12 +8,6 @@ import itertools
 from models import Player, TelemetryEvent, ACTIONS
 from state import GameState
 
-try:
-    from mongo_store import MongoStore
-    _mongo = MongoStore()
-except Exception:
-    _mongo = None
-
 MAX_NORMAL_SPEED = 180
 TELEPORT_PROBABILITY = 0.04
 SPEED_HACK_MULT = 2.6
@@ -28,7 +22,6 @@ def _uid(prefix: str) -> str:
 def _lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
-
 class Producer:
     def __init__(self, state: GameState) -> None:
         self.state = state
@@ -39,7 +32,6 @@ class Producer:
         self._tasks: dict[str, asyncio.Task] = {}
         self._kill_tasks: dict[str, asyncio.Task] = {}
         self._loop_task: asyncio.Task | None = None
-        self.mongo_store = _mongo
 
     # --- public controls ---
     def set_client_count(self, count: int) -> None:
@@ -66,17 +58,6 @@ class Producer:
         p = self.state.create_player(cheater=True)
         p.status = "in_queue"
         p.queue_enter_at = time.time() * 1000
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_player_event({
-                    "type": "player_injected",
-                    "player_id": p.id,
-                    "player_name": p.name,
-                    "is_cheater": True,
-                    "timestamp": time.time() * 1000,
-                })
-            except Exception:
-                pass
 
     @property
     def is_running(self) -> bool:
@@ -91,20 +72,7 @@ class Producer:
         current = len(self.state.players)
         if current < self.target_clients:
             for _ in range(self.target_clients - current):
-                p = self.state.create_player(cheater=random.random() < 0.12)
-                if self.mongo_store:
-                    try:
-                        self.mongo_store.store_player_event({
-                            "type": "player_created",
-                            "player_id": p.id,
-                            "player_name": p.name,
-                            "region": p.region,
-                            "skill": p.skill,
-                            "ping": p.ping,
-                            "timestamp": time.time() * 1000,
-                        })
-                    except Exception:
-                        pass
+                self.state.create_player(cheater=random.random() < 0.12)
         elif current > self.target_clients:
             ids = list(self.state.players.keys())[: current - self.target_clients]
             for pid in ids:
@@ -139,30 +107,9 @@ class Producer:
 
     def on_player_enter_match(self, p: Player) -> None:
         self._attach_timers(p)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_player_event({
-                    "type": "player_enter_match",
-                    "player_id": p.id,
-                    "player_name": p.name,
-                    "match_id": p.match_id,
-                    "timestamp": time.time() * 1000,
-                })
-            except Exception:
-                pass
 
     def on_player_leave_match(self, p: Player) -> None:
         self._detach_timers(p.id)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_player_event({
-                    "type": "player_leave_match",
-                    "player_id": p.id,
-                    "player_name": p.name,
-                    "timestamp": time.time() * 1000,
-                })
-            except Exception:
-                pass
 
     # --- async event loops ---
     async def _position_loop(self, p: Player) -> None:
@@ -175,6 +122,7 @@ class Producer:
             self._emit_position_event(p)
             if random.random() < 0.25:
                 self._emit_action_event(p)
+            # fluctuate ping slightly
             p.ping = max(8, round(p.ping + (random.random() - 0.5) * 8))
             p.last_event_at = time.time() * 1000
 
@@ -187,7 +135,7 @@ class Producer:
             if random.random() < 0.5:
                 self._emit_kill_event(p)
 
-    # --- movimiento y emisi�n de eventos ---
+    # --- movimiento y emisión de eventos ---
     def _move_player(self, p: Player, dt: float) -> None:
         dx = p.target_x - p.x
         dy = p.target_y - p.y
@@ -199,6 +147,7 @@ class Producer:
         speed = MAX_NORMAL_SPEED
         if p.is_cheater:
             if random.random() < TELEPORT_PROBABILITY:
+                # TELETRANSPORTARSE: saltar a una ubicación aleatoria
                 p.x = random.random() * 1000
                 p.y = random.random() * 1000
                 return
@@ -225,21 +174,6 @@ class Producer:
         )
         self.state.record_event()
         self.pending_events.append(ev)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_event(ev)
-                self.mongo_store.store_player_event({
-                    "type": "telemetry",
-                    "event_type": "position",
-                    "player_id": p.id,
-                    "x": p.x,
-                    "y": p.y,
-                    "ping": p.ping,
-                    "timestamp": ev.timestamp,
-                    "producer": "player_producer",
-                })
-            except Exception:
-                pass
 
     def _emit_action_event(self, p: Player) -> None:
         ev = TelemetryEvent(
@@ -255,19 +189,6 @@ class Producer:
         )
         self.state.record_event()
         self.pending_events.append(ev)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_event(ev)
-                self.mongo_store.store_player_event({
-                    "type": "telemetry",
-                    "event_type": "action",
-                    "player_id": p.id,
-                    "action": ev.action,
-                    "timestamp": ev.timestamp,
-                    "producer": "player_producer",
-                })
-            except Exception:
-                pass
 
     def _emit_kill_event(self, p: Player) -> None:
         candidates = [
@@ -293,19 +214,6 @@ class Producer:
         )
         self.state.record_event()
         self.pending_events.append(ev)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_event(ev)
-                self.mongo_store.store_player_event({
-                    "type": "telemetry",
-                    "event_type": "kill",
-                    "player_id": p.id,
-                    "victim_id": victim.id,
-                    "timestamp": ev.timestamp,
-                    "producer": "player_producer",
-                })
-            except Exception:
-                pass
 
     def drain_events(self) -> list[TelemetryEvent]:
         out = self.pending_events

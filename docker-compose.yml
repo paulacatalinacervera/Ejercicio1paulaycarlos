@@ -1,7 +1,7 @@
 services:
   telemetry-app:
     build: .
-    image: telemetry-app:3.5.2
+    image: telemetry-app:3.5.1
     container_name: telemetry-app
     restart: unless-stopped
     user: spark
@@ -9,46 +9,48 @@ services:
       - "3003:3003"
       - "4040:4040"
     environment:
-      SPARK_MASTER: spark://spark-master:7077
+      SPARK_MASTER: local[4]
       SPARK_DRIVER_HOST: telemetry-app
       SPARK_DRIVER_BIND: 0.0.0.0
-      KAFKA_BOOTSTRAP_SERVERS: act1234-kafka-1:9093
+      KAFKA_BOOTSTRAP_SERVERS: localhost:9092
       KAFKA_TOPIC: telemetry.server.metrics
-      MONGO_URI: mongodb://mongo:27017
-      MONGO_DB: telemetry_matchmaking
+<<<<<<< Updated upstream
+      REDIS_URL: redis://taller-redis:6379/0
+      REDIS_PREFIX: "telemetry:"
+=======
+      DB_PATH: /app/data/telemetry.db
+>>>>>>> Stashed changes
     volumes:
       - ./:/app
+      - telemetry_data:/app/data
     command: ["python3", "app.py"]
+<<<<<<< Updated upstream
     networks:
       - taller_default
       - act1234_default
-      - mongo_network
 
-  mongo:
-    image: mongo:7
-    container_name: telemetry-mongo
+  # UI web de Redis (http://localhost:5540). Se une a la red de Redis para
+  # alcanzar `taller-redis:6379` y precarga la conexión por variables de entorno.
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: redis-insight
     restart: unless-stopped
     ports:
-      - "27017:27017"
-    volumes:
-      - mongo_data:/data/db
-    networks:
-      - mongo_network
-
-  mongo-express:
-    image: mongo-express:latest
-    container_name: mongo-express
-    restart: unless-stopped
-    ports:
-      - "8081:8081"
+      - "5540:5540"
     environment:
-      ME_CONFIG_MONGODB_SERVER: mongo
-      ME_CONFIG_BASICAUTH: "false"
-    depends_on:
-      - mongo
+      RI_REDIS_HOST: taller-redis
+      RI_REDIS_PORT: "6379"
+      RI_REDIS_ALIAS: "Telemetry Redis"
+      RI_ACCEPT_TERMS_AND_CONDITIONS: "true"
+    volumes:
+      - redis-insight-data:/data
     networks:
-      - mongo_network
+      - taller_default
 
+# La app se conecta a la red del clúster Spark (taller-123_default, donde vive
+# spark-master) y a la red de Kafka (act1234_default, donde vive act1234-kafka-1
+# con su listener INTERNAL en el puerto 9093). Ambas deben existir.
+# redis-insight comparte la red de Spark/Redis para ver `taller-redis`.
 networks:
   taller_default:
     name: taller-123_default
@@ -56,8 +58,11 @@ networks:
   act1234_default:
     name: act1234_default
     external: true
-  mongo_network:
-    driver: bridge
 
 volumes:
-  mongo_data:
+  redis-insight-data:
+=======
+
+volumes:
+  telemetry_data:
+>>>>>>> Stashed changes

@@ -54,7 +54,7 @@
         </div>
         <div class="spacer"></div>
         <button id="btn-inject" class="btn btn-danger">Inyectar tramposo</button>
-        <button id="btn-sync-redis" class="btn btn-ghost" type="button">Sincronizar Redis</button>
+        <button id="btn-sync-db" class="btn btn-ghost" type="button">Sincronizar BD</button>
         <button id="btn-clear" class="btn btn-ghost">Limpiar alertas</button>
       </div>
     </div>
@@ -765,13 +765,24 @@
     document.getElementById('btn-inject').addEventListener('click', () => {
       socket.emit('control', { type: 'inject-cheater' });
     });
-    const btnSyncRedis2 = document.getElementById('btn-sync-redis');
-    if (btnSyncRedis2) {
-      btnSyncRedis2.addEventListener('click', () => {
-        socket.emit('control', { type: 'sync-redis' });
-        btnSyncRedis2.disabled = true;
-        setTimeout(() => (btnSyncRedis2.disabled = false), 800);
+    const btnSyncDb = document.getElementById('btn-sync-db');
+    if (btnSyncDb) {
+      btnSyncDb.addEventListener('click', () => {
+        socket.emit('control', { type: 'sync-db' });
+        btnSyncDb.disabled = true;
+        setTimeout(() => (btnSyncDb.disabled = false), 800);
       });
+    } else {
+      const btnSyncRedis2 = document.getElementById('btn-sync-redis');
+      if (btnSyncRedis2) {
+        btnSyncRedis2.id = 'btn-sync-db';
+        btnSyncRedis2.textContent = 'Sincronizar BD';
+        btnSyncRedis2.addEventListener('click', () => {
+          socket.emit('control', { type: 'sync-db' });
+          btnSyncRedis2.disabled = true;
+          setTimeout(() => (btnSyncRedis2.disabled = false), 800);
+        });
+      }
     }
     document.getElementById('btn-clear').addEventListener('click', () => {
       socket.emit('control', { type: 'clear-alerts' });

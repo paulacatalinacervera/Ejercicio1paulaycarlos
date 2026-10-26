@@ -9,12 +9,6 @@ import time
 from models import ServerMetricEvent, ServerInfo, SERVER_STATUS_RUNNING
 from state import GameState
 
-try:
-    from mongo_store import MongoStore
-    _mongo = MongoStore()
-except Exception:
-    _mongo = None
-
 KAFKA_BROKER = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "telemetry.server.metrics")
 
@@ -45,7 +39,6 @@ class ServerProducer:
         self._kafka_producer = None
         self._kafka_error: str | None = None
         self._last_connect_attempt = 0.0
-        self.mongo_store = _mongo
         self._create_producer()
 
     # --- Kafka transport ---
@@ -62,12 +55,16 @@ class ServerProducer:
                 linger_ms=20,
                 max_block_ms=1500,
             )
-        except Exception as exc:
-            self._kafka_error = f"Kafka no disponible - alternativa en memoria: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            self._kafka_error = f"Kafka no disponible → alternativa en memoria: {exc}"
             self.fallback = True
             self._kafka_producer = None
 
     def _broker_reachable(self) -> bool:
+        """Sondeo TCP al servidor de arranque (*bootstrap server*):
+        una comprobación de estado económica y fiable que no depende
+        del comportamiento de conexión diferida (*lazy connection*)
+        de `KafkaProducer`."""
         try:
             import socket
 
@@ -79,6 +76,11 @@ class ServerProducer:
             return False
 
     def _maybe_reconnect(self) -> None:
+        """Si el productor se encuentra en modo de respaldo (*fallback*),
+        se reintentará la conexión con el *broker* cada 5 segundos. Una
+        vez que el *broker* vuelve a estar accesible, el productor se recrea
+        y se desactiva el modo de respaldo; de este modo, el flujo de procesamiento
+        (*pipeline*) se recupera sin necesidad de recrear el contenedor."""
         if not self.fallback or self.kafka_ok:
             return
         now = time.time()
@@ -139,19 +141,6 @@ class ServerProducer:
         )
         self.state.servers[info.id] = info
         self._attach_loop(info)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_server_event({
-                    "type": "server_spawned",
-                    "server_id": info.id,
-                    "server_name": info.name,
-                    "region": info.region,
-                    "match_id": match.id,
-                    "timestamp": time.time() * 1000,
-                    "producer": "server_producer",
-                })
-            except Exception:
-                pass
 
     def on_server_stopped(self, match) -> None:
         sid = _server_id(match.id)
@@ -159,17 +148,6 @@ class ServerProducer:
         if task:
             task.cancel()
         self.state.servers.pop(sid, None)
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_server_event({
-                    "type": "server_stopped",
-                    "server_id": sid,
-                    "match_id": match.id,
-                    "timestamp": time.time() * 1000,
-                    "producer": "server_producer",
-                })
-            except Exception:
-                pass
 
     # --- asyncio task management ---
     def _attach_loop(self, info: ServerInfo) -> None:
@@ -230,27 +208,9 @@ class ServerProducer:
             active_players=info.active_players,
             timestamp=info.last_event_at,
         )
-        self.state.record_event()
+        self.state.record_event() 
         self._produced += 1
         self._maybe_reconnect()
-        # Los dos productores almacenan informaci�n en el consumidor via MongoDB
-        if self.mongo_store:
-            try:
-                self.mongo_store.store_event(ev)
-                self.mongo_store.store_server_event({
-                    "type": "server_metric",
-                    "event_id": ev.id,
-                    "server_id": ev.server_id,
-                    "cpu": ev.cpu,
-                    "memory": ev.memory,
-                    "tick_rate": ev.tick_rate,
-                    "packet_loss": ev.packet_loss,
-                    "active_players": ev.active_players,
-                    "timestamp": ev.timestamp,
-                    "producer": "server_producer",
-                })
-            except Exception:
-                pass
         if self.kafka_ok:
             try:
                 self._kafka_producer.send(KAFKA_TOPIC, key=info.id, value=ev.to_dict())
@@ -258,5 +218,5 @@ class ServerProducer:
             except Exception as exc:
                 self._kafka_producer = None
                 self.fallback = True
-                self._kafka_error = f"Kafka send failed - in-memory fallback: {exc}"
+                self._kafka_error = f"Kafka send failed → in-memory fallback: {exc}"
         self.state.append_server_event(ev)
